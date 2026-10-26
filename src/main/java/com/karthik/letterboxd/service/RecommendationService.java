@@ -1,7 +1,9 @@
 package com.karthik.letterboxd.service;
 
 import com.karthik.letterboxd.model.Film;
+import com.karthik.letterboxd.model.WatchlistItem;
 import com.karthik.letterboxd.repository.FilmRepository;
+import com.karthik.letterboxd.repository.WatchlistRepository;
 import org.springframework.stereotype.Service;
 
 import java.time.LocalDate;
@@ -12,11 +14,17 @@ import java.util.stream.Collectors;
 @Service
 public class RecommendationService {
 
+    private static final int MAX_PICKS_PER_FAVORITE = 2;
+
     private final FilmRepository filmRepository;
+    private final WatchlistRepository watchlistRepository;
     private final TmdbClient tmdbClient;
 
-    public RecommendationService(FilmRepository filmRepository, TmdbClient tmdbClient) {
+    public RecommendationService(FilmRepository filmRepository,
+                                 WatchlistRepository watchlistRepository,
+                                 TmdbClient tmdbClient) {
         this.filmRepository = filmRepository;
+        this.watchlistRepository = watchlistRepository;
         this.tmdbClient = tmdbClient;
     }
 
@@ -60,11 +68,15 @@ public class RecommendationService {
         Map<String, Double> directorTaste = taste(rated, myAverage,
                 f -> f.getDirector() == null ? List.of() : List.of(f.getDirector()));
 
-        // Films you've already seen, so we never recommend them
-        Set<Long> seen = films.stream()
+        // Films you've seen or already put on your watchlist: never recommend these
+        Set<Long> exclude = films.stream()
                 .map(Film::getTmdbId)
                 .filter(Objects::nonNull)
                 .collect(Collectors.toSet());
+        watchlistRepository.findAll().stream()
+                .map(WatchlistItem::getTmdbId)
+                .filter(Objects::nonNull)
+                .forEach(exclude::add);
 
         // 2. Seeds: your 20 highest-rated films (most recently watched first on ties)
         List<Film> seeds = rated.stream()
@@ -80,7 +92,7 @@ public class RecommendationService {
         for (Film seed : seeds) {
             try {
                 for (TmdbClient.RecommendedMovie movie : tmdbClient.getRecommendations(seed.getTmdbId())) {
-                    if (movie.id() == null || seen.contains(movie.id())) continue;
+                    if (movie.id() == null || exclude.contains(movie.id())) continue;
                     candidates.computeIfAbsent(movie.id(), id -> new Candidate(movie))
                             .seeds.add(seed.getName());
                 }
@@ -109,10 +121,10 @@ public class RecommendationService {
             c.score = score;
         }
 
-        // 5. Second pass on the shortlist: look up directors and add a bonus
+        // 5. Second pass on a wider shortlist: look up directors and add a bonus
         List<Candidate> shortlist = candidates.values().stream()
                 .sorted(Comparator.comparingDouble((Candidate c) -> c.score).reversed())
-                .limit(limit * 2L)
+                .limit(limit * 3L)
                 .toList();
 
         for (Candidate c : shortlist) {
@@ -132,10 +144,25 @@ public class RecommendationService {
             }
         }
 
-        // 6. Final ranking, with explanations
-        return shortlist.stream()
+        List<Candidate> ranked = shortlist.stream()
                 .sorted(Comparator.comparingDouble((Candidate c) -> c.score).reversed())
-                .limit(limit)
+                .toList();
+
+        // 6. Pick the final list, limiting how many picks one favorite can drive
+        Map<String, Integer> picksPerFavorite = new HashMap<>();
+        List<Candidate> picked = new ArrayList<>();
+        for (Candidate c : ranked) {
+            boolean onlyOneFavorite = c.seeds.size() == 1;
+            String favorite = c.seeds.get(0);
+            if (onlyOneFavorite && picksPerFavorite.getOrDefault(favorite, 0) >= MAX_PICKS_PER_FAVORITE) {
+                continue; // this favorite already has enough picks
+            }
+            picked.add(c);
+            c.seeds.forEach(s -> picksPerFavorite.merge(s, 1, Integer::sum));
+            if (picked.size() == limit) break;
+        }
+
+        return picked.stream()
                 .map(c -> toRecommendation(c, genreTaste, directorTaste))
                 .toList();
     }
