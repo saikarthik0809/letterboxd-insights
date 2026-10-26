@@ -2,6 +2,7 @@ package com.karthik.letterboxd.controller;
 
 import com.karthik.letterboxd.model.Film;
 import com.karthik.letterboxd.repository.FilmRepository;
+import com.karthik.letterboxd.service.FilmEnrichmentService;
 import com.karthik.letterboxd.service.FilmImportService;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
@@ -17,10 +18,14 @@ public class FilmController {
 
     private final FilmRepository filmRepository;
     private final FilmImportService filmImportService;
+    private final FilmEnrichmentService filmEnrichmentService;
 
-    public FilmController(FilmRepository filmRepository, FilmImportService filmImportService) {
+    public FilmController(FilmRepository filmRepository,
+                          FilmImportService filmImportService,
+                          FilmEnrichmentService filmEnrichmentService) {
         this.filmRepository = filmRepository;
         this.filmImportService = filmImportService;
+        this.filmEnrichmentService = filmEnrichmentService;
     }
 
     @GetMapping
@@ -32,6 +37,11 @@ public class FilmController {
     public Map<String, Integer> upload(@RequestParam("file") MultipartFile file) throws IOException {
         int count = filmImportService.importFile(file);
         return Map.of("imported", count);
+    }
+
+    @PostMapping("/enrich")
+    public Map<String, Long> enrich() {
+        return filmEnrichmentService.enrichBatch(20);
     }
 
     @DeleteMapping
