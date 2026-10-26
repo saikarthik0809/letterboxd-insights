@@ -8,6 +8,7 @@ import org.springframework.web.client.HttpClientErrorException;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 
 @Service
 public class FilmEnrichmentService {
@@ -25,36 +26,7 @@ public class FilmEnrichmentService {
         List<Film> batch = filmRepository.findByEnrichedIsNull(PageRequest.of(0, batchSize));
 
         for (Film film : batch) {
-            try {
-                tmdbClient.findMovieId(film.getName(), film.getYear()).ifPresent(tmdbId -> {
-                    TmdbClient.MovieDetails details = tmdbClient.getDetails(tmdbId);
-
-                    film.setTmdbId(tmdbId);
-                    film.setPosterPath(details.posterPath());
-                    film.setOverview(details.overview());
-                    film.setRuntime(details.runtime());
-                    film.setTmdbRating(details.voteAverage());
-
-                    film.getGenres().clear();
-                    if (details.genres() != null) {
-                        details.genres().forEach(g -> film.getGenres().add(g.name()));
-                    }
-
-                    if (details.credits() != null && details.credits().crew() != null) {
-                        details.credits().crew().stream()
-                                .filter(c -> "Director".equals(c.job()))
-                                .findFirst()
-                                .ifPresent(c -> film.setDirector(c.name()));
-                    }
-                });
-            } catch (HttpClientErrorException.Unauthorized e) {
-                // wrong or missing TMDB token: stop instead of skipping every film
-                throw e;
-            } catch (Exception e) {
-                // any other problem with one film: skip it and keep going
-            }
-
-            film.setEnriched(true);
+            enrichFilm(film);
             filmRepository.save(film);
         }
 
@@ -62,5 +34,44 @@ public class FilmEnrichmentService {
                 "processed", (long) batch.size(),
                 "remaining", filmRepository.countByEnrichedIsNull()
         );
+    }
+
+    // Fills in one film's TMDB details (doesn't save it)
+    public void enrichFilm(Film film) {
+        try {
+            // if we already know the TMDB id, skip the search
+            Optional<Long> tmdbId = film.getTmdbId() != null
+                    ? Optional.of(film.getTmdbId())
+                    : tmdbClient.findMovieId(film.getName(), film.getYear());
+
+            tmdbId.ifPresent(id -> {
+                TmdbClient.MovieDetails details = tmdbClient.getDetails(id);
+
+                film.setTmdbId(id);
+                film.setPosterPath(details.posterPath());
+                film.setOverview(details.overview());
+                film.setRuntime(details.runtime());
+                film.setTmdbRating(details.voteAverage());
+
+                film.getGenres().clear();
+                if (details.genres() != null) {
+                    details.genres().forEach(g -> film.getGenres().add(g.name()));
+                }
+
+                if (details.credits() != null && details.credits().crew() != null) {
+                    details.credits().crew().stream()
+                            .filter(c -> "Director".equals(c.job()))
+                            .findFirst()
+                            .ifPresent(c -> film.setDirector(c.name()));
+                }
+            });
+        } catch (HttpClientErrorException.Unauthorized e) {
+            // wrong or missing TMDB token: stop instead of skipping every film
+            throw e;
+        } catch (Exception e) {
+            // any other problem with this film: leave it without details
+        }
+
+        film.setEnriched(true);
     }
 }
