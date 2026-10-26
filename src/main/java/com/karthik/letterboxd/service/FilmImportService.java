@@ -8,11 +8,11 @@ import org.apache.commons.csv.CSVRecord;
 import org.springframework.stereotype.Service;
 import org.springframework.web.multipart.MultipartFile;
 
-import java.io.IOException;
-import java.io.InputStreamReader;
-import java.io.Reader;
+import java.io.*;
 import java.nio.charset.StandardCharsets;
 import java.time.LocalDate;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipInputStream;
 
 @Service
 public class FilmImportService {
@@ -23,7 +23,36 @@ public class FilmImportService {
         this.filmRepository = filmRepository;
     }
 
-    public int importCsv(MultipartFile file) throws IOException {
+    // Accepts either the full Letterboxd zip or a single CSV
+    public int importFile(MultipartFile file) throws IOException {
+        String name = file.getOriginalFilename() == null ? "" : file.getOriginalFilename().toLowerCase();
+        if (name.endsWith(".zip")) {
+            return importZip(file.getInputStream());
+        }
+        return importCsv(file.getInputStream());
+    }
+
+    private int importZip(InputStream in) throws IOException {
+        byte[] watched = null;
+        byte[] ratings = null;
+
+        try (ZipInputStream zip = new ZipInputStream(in)) {
+            ZipEntry entry;
+            while ((entry = zip.getNextEntry()) != null) {
+                String entryName = entry.getName();
+                if (entryName.equals("watched.csv")) watched = zip.readAllBytes();
+                else if (entryName.equals("ratings.csv")) ratings = zip.readAllBytes();
+            }
+        }
+
+        int count = 0;
+        // watched first (films + watch dates), then ratings on top
+        if (watched != null) count = importCsv(new ByteArrayInputStream(watched));
+        if (ratings != null) importCsv(new ByteArrayInputStream(ratings));
+        return count;
+    }
+
+    private int importCsv(InputStream in) throws IOException {
         CSVFormat format = CSVFormat.DEFAULT.builder()
                 .setHeader()
                 .setSkipHeaderRecord(true)
@@ -33,7 +62,7 @@ public class FilmImportService {
 
         int count = 0;
 
-        try (Reader reader = new InputStreamReader(file.getInputStream(), StandardCharsets.UTF_8);
+        try (Reader reader = new InputStreamReader(in, StandardCharsets.UTF_8);
              CSVParser parser = format.parse(reader)) {
 
             boolean hasRating = parser.getHeaderMap().containsKey("Rating");
@@ -42,7 +71,6 @@ public class FilmImportService {
                 String uri = row.get("Letterboxd URI");
                 if (uri == null || uri.isBlank()) continue;
 
-                // update the film if we already have it, otherwise create a new one
                 Film film = filmRepository.findByLetterboxdUri(uri).orElseGet(Film::new);
                 film.setLetterboxdUri(uri);
                 film.setName(row.get("Name"));

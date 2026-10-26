@@ -30,7 +30,12 @@ public class FilmController {
 
     @PostMapping("/upload")
     public Map<String, Integer> upload(@RequestParam("file") MultipartFile file) throws IOException {
-        int count = filmImportService.importCsv(file);
+        int count = filmImportService.importFile(file);
         return Map.of("imported", count);
+    }
+
+    @DeleteMapping
+    public void deleteAll() {
+        filmRepository.deleteAll();
     }
 }
